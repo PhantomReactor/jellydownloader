@@ -15,3 +15,12 @@ services:
     # switch to host networking instead:
     # network_mode: host
     # (then drop the ports: mapping above)
+
+# The server had exhausted Docker's default address pools, so this project gets an
+# explicit subnet outside the usual 172.17-172.31 range.
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.200.0.0/24
