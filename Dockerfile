@@ -22,12 +22,17 @@ COPY backend backend
 COPY frontend frontend
 
 # Frontend (trunk, wasm) and backend release build; target dirs ride on cache mounts
-# so recompiles after source changes stay incremental.
+# so recompiles after source changes stay incremental. Artifacts are staged to /out
+# because cache-mount contents do not persist into the image layer.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
     --mount=type=cache,target=/app/frontend/target \
-    bash -c 'cd frontend && trunk build --release && cd .. && cargo build --release -p backend'
+    bash -c 'cd frontend && trunk build --release && cd .. && cargo build --release -p backend \
+             && mkdir -p /out \
+             && cp target/release/jellydownloader /out/ \
+             && cp -r frontend/dist /out/dist \
+             && ls -la /out /out/dist'
 
 # ---------- runtime ----------
 FROM debian:bookworm-slim AS runtime
@@ -38,8 +43,8 @@ RUN apt-get update \
     && useradd -m -u 1000 jdl
 
 WORKDIR /app
-COPY --from=builder /app/target/release/jellydownloader /usr/local/bin/jellydownloader
-COPY --from=builder /app/frontend/dist /app/frontend/dist
+COPY --from=builder /out/jellydownloader /usr/local/bin/jellydownloader
+COPY --from=builder /out/dist /app/frontend/dist
 
 RUN mkdir -p /app/downloads /app/data && chown -R jdl:jdl /app
 VOLUME ["/app/downloads", "/app/data"]
