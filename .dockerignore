@@ -1,0 +1,8 @@
+target/
+frontend/target/
+frontend/dist/
+node_modules/
+data/
+downloads/
+config.json
+.git/

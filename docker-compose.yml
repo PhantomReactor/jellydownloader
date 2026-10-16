@@ -1,0 +1,17 @@
+services:
+  jellydownloader:
+    build: .
+    image: jellydownloader
+    container_name: jellydownloader
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      # Finished files + job/session state live on the host
+      - ./downloads:/app/downloads
+      - ./data:/app/data
+    # If Jellyfin itself listens on this same host, entering http://<host-LAN-IP>:8096
+    # at login works fine from a bridged container. Should a URL ever be unreachable,
+    # switch to host networking instead:
+    # network_mode: host
+    # (then drop the ports: mapping above)

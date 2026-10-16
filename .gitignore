@@ -1,0 +1,7 @@
+node_modules/
+dist/
+target/
+downloads/
+data/
+*.part
+config.json
