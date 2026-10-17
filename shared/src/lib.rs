@@ -108,6 +108,7 @@ pub struct ItemSummary {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaInfo {
+
     /// Jellyfin MediaSource id (needed for stream/transcode endpoints).
     pub source_id: Option<String>,
     pub container: Option<String>,

@@ -46,6 +46,8 @@ pub struct TranscodeParams {
     pub video_codec: String,
     pub video_bitrate: u64,
     pub media_source_id: Option<String>,
+    /// Rough output size for pre-flight disk checks (same model as the UI estimate).
+    pub estimated_size: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -757,8 +759,15 @@ impl JobManager {
             if matches!(e.job.state, JobState::Paused | JobState::Stopped) {
                 return;
             }
+            let msg = if msg.contains("No space left on device") {
+                format!(
+                    "{msg}\nDisk full. Free up space and press Start — the downloaded part is kept (don't press Restart, that wipes it)."
+                )
+            } else {
+                msg.to_string()
+            };
             e.job.state = JobState::Failed;
-            e.job.error = Some(msg.to_string());
+            e.job.error = Some(msg);
             e.job.speed_bps = 0.0;
             e.job.eta_seconds = None;
             e.rt.abort = None;
@@ -869,7 +878,32 @@ fn compute_transcode_params(detail: &ItemDetail, preset: &QualityPreset) -> Tran
         }
         _ => preset.video_bitrate.unwrap_or(4_000_000),
     };
-    TranscodeParams { video_codec: codec, video_bitrate: bps, media_source_id }
+    let estimate = media
+        .and_then(|m| m.size)
+        .zip(src_dim)
+        .filter(|(o, s)| *o > 0 && *s > 0)
+        .map(|(o, s)| {
+            let ratio = ((target_dim as f64 / s as f64).powi(2)).clamp(0.02, 1.0);
+            (o as f64 * ratio) as u64
+        })
+        .unwrap_or_else(|| {
+            let secs = run_ticks_secs(detail.run_time_ticks).unwrap_or(0.0) as f64;
+            ((preset.estimate_bps.unwrap_or(4_000_000) as f64 * secs / 8.0) as u64).max(200_000_000)
+        });
+    TranscodeParams { video_codec: codec, video_bitrate: bps, media_source_id, estimated_size: estimate }
+}
+
+/// Byte sizes for humans in server-side messages.
+pub fn format_human(n: f64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = n;
+    for unit in UNITS {
+        if v < 1024.0 {
+            return format!("{v:.1} {unit}");
+        }
+        v /= 1024.0;
+    }
+    format!("{v:.1} PB")
 }
 
 /// Human-friendly file base name for an item.

@@ -50,6 +50,26 @@ async fn run_inner(mgr: &Arc<JobManager>, id: &str) -> Result<PathBuf> {
     let preset = preset_by_id(&job.quality_id).ok_or_else(|| anyhow!("unknown quality preset"))?;
     let ctx = EngineCtx { http: engine_client() };
 
+    // Fail within seconds — not after hours — when the disk can't take the output.
+    // Transient peak during a transcode: segment copies (≈ output) + the remuxed
+    // file being written (≈ output) → require ~2× the estimate.
+    let estimate: u64 = match preset.kind {
+        QualityKind::Original => job.bytes_total.unwrap_or(0),
+        QualityKind::Transcode => transcode.as_ref().map(|t| t.estimated_size).unwrap_or(0),
+    };
+    if estimate > 0 && job.bytes_done == 0 {
+        if let Some(free) = disk_free_bytes(&tmp_dir).await {
+            let needed = estimate.saturating_mul(2);
+            if free < needed {
+                bail!("__DISK__Not enough disk space on the app host: needs roughly {}, only {} free. Free space or lower the quality.",
+                    crate::jobs::format_human(needed as f64),
+                    crate::jobs::format_human(free as f64),
+                );
+            }
+        }
+    }
+
+    // Fail within seconds — not after hours — when the disk can't take the output.
     let path = match preset.kind {
         QualityKind::Original => download_original(&ctx, mgr, &job, &creds, is_audio, source_id.as_deref(), &tmp_dir, &downloads_dir, &final_name).await?,
         QualityKind::Transcode => {
@@ -88,6 +108,25 @@ fn unique_final_path(dir: &Path, name: &str) -> PathBuf {
 
 fn part_file_path(tmp_dir: &Path) -> PathBuf {
     tmp_dir.join("file.part")
+}
+
+/// Free bytes on the filesystem containing `path` (via `df -P`; std has no statvfs).
+/// Free bytes on the filesystem containing `path` (via `df -P`; std has no statvfs).
+async fn disk_free_bytes(path: &Path) -> Option<u64> {
+    let output = tokio::process::Command::new("df")
+        .args(["-P", "-k", &path.to_string_lossy()])
+        .output()
+        .await
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let avail: u64 = text
+        .lines()
+        .filter(|l| l.starts_with('/') || l.lines().count() > 1)
+        .filter_map(|l| l.split_whitespace().nth(3))
+        .next()?
+        .parse()
+        .ok()?;
+    Some(avail.saturating_mul(1024))
 }
 
 /// rename() can't cross filesystems (the downloads dir may be a bind mount),
@@ -581,7 +620,9 @@ async fn remux(
             f.read_exact(&mut hdr).ok().map(|_| hdr[0] == 0x47)
         })
         .unwrap_or(false);
-    let out_part = tmp_dir.join("remux.part");
+    // Write the remuxed output straight into the downloads filesystem: the
+    // last thing we need is segments + remux copy + final copy on one disk.
+    let out_part = downloads_dir.join(format!(".{}.remux.part", job.id));
     let mut cmd = tokio::process::Command::new("ffmpeg");
     cmd.args([
         "-y",
