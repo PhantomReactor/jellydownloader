@@ -16,6 +16,6 @@ console_error_panic_hook = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 js-sys = "0.3"
-web-sys = { version = "0.3.106", features = ["Window", "Storage", "Document", "Element", "HtmlElement", "HtmlAnchorElement", "HtmlInputElement"] }
+web-sys = { version = "0.3.106", features = ["Window", "Storage", "Document", "Element", "HtmlElement", "HtmlAnchorElement", "HtmlInputElement", "History", "PopStateEvent"] }
 
 [package.metadata.trunk]

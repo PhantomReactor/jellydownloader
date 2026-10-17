@@ -78,11 +78,18 @@ pub fn ItemModal() -> impl IntoView {
                         let q = quality.get_untracked();
                         let save = auto_save.get_untracked();
                         spawn_local(async move {
+                            let label = shared::preset_by_id(&q)
+                                .map(|p| p.label.clone())
+                                .unwrap_or_else(|| q.clone());
                             match api::create_download(id, q, save).await {
-                                Ok(_) => {
-                                    push_toast(&ctx, "ok", format!("Added “{name}” to downloads"));
+                                Ok(r) => {
+                                    match r.existing.as_deref() {
+                                        Some("completed") => push_toast(&ctx, "ok", format!("Already downloaded — showing it below")),
+                                        Some("active") => push_toast(&ctx, "ok", format!("Already in the queue — no double download")),
+                                        _ => push_toast(&ctx, "ok", format!("Queued “{name}” · {label} — the server prepares it, you save it after")),
+                                    }
                                     detail.set(None);
-                                    ctx.screen.set(crate::Screen::Downloads);
+                                    ctx.navigate(crate::Screen::Downloads);
                                 }
                                 Err(msg) => push_toast(&ctx, "err", msg),
                             }
@@ -214,8 +221,15 @@ pub fn EpisodesModal() -> impl IntoView {
                         let q = ctx.episode_quality.get_untracked();
                         let save = auto_save.get_untracked();
                         spawn_local(async move {
-                            match api::create_download(ep_id.clone(), q, save).await {
-                                Ok(_) => push_toast(&ctx, "ok", format!("Added “{ep_name}” to downloads")),
+                            let label = shared::preset_by_id(&q)
+                                .map(|p| p.label.clone())
+                                .unwrap_or_else(|| q.clone());
+                            match api::create_download(ep_id, q, save).await {
+                                Ok(r) => match r.existing.as_deref() {
+                                    Some("completed") => push_toast(&ctx, "ok", format!("“{ep_name}” — already downloaded")),
+                                    Some("active") => push_toast(&ctx, "ok", format!("“{ep_name}” — already in the queue")),
+                                    _ => push_toast(&ctx, "ok", format!("Queued “{ep_name}” · {label}")),
+                                },
                                 Err(msg) => push_toast(&ctx, "err", msg),
                             }
                             busy_id.set(None);

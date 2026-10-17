@@ -42,6 +42,20 @@ pub struct AppCtx {
     pub episode_quality: RwSignal<String>,
 }
 
+impl AppCtx {
+    /// Screen change with a browser history entry, so the back button works.
+    pub fn navigate(&self, target: Screen) {
+        let s = match target {
+            Screen::Library => "library",
+            Screen::Downloads => "downloads",
+        };
+        if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
+            let _ = history.push_state(&wasm_bindgen::JsValue::from_str(s), "");
+        }
+        self.screen.set(target);
+    }
+}
+
 static TOAST_ID: AtomicU64 = AtomicU64::new(0);
 
 const SAVED_KEY: &str = "jd.saved";
@@ -120,6 +134,29 @@ fn App() -> impl IntoView {
         }
     });
 
+    // Browser back/forward switches screens instead of leaving the app.
+    // (The base entry is stamped "library" so Back from Browse stays sane.)
+    if let Some(window) = web_sys::window() {
+        if let Ok(history) = window.history() {
+            match history.state().ok().and_then(|s| s.as_string()) {
+                Some(s) if s == "downloads" => screen.set(Screen::Downloads),
+                Some(s) if s == "library" => screen.set(Screen::Library),
+                _ => {
+                    let _ = history.replace_state(&wasm_bindgen::JsValue::from_str("library"), "");
+                }
+            }
+        }
+        let pop = wasm_bindgen::closure::Closure::wrap(Box::new(move |e: web_sys::PopStateEvent| {
+            match e.state().as_string().as_deref() {
+                Some("downloads") => screen.set(Screen::Downloads),
+                Some("library") => screen.set(Screen::Library),
+                _ => {}
+            }
+        }) as Box<dyn FnMut(_)>);
+        let _ = window.add_event_listener_with_callback("popstate", pop.as_ref().unchecked_ref());
+        pop.forget();
+    }
+
     // Keep the download list fresh while signed in, and offer finished
     // auto-save jobs to the browser as soon as they appear.
     spawn_local(async move {
@@ -188,10 +225,9 @@ fn Shell() -> impl IntoView {
     };
 
     let nav_library = {
-        let sctx = sctx;
-        move |_: leptos::ev::MouseEvent| sctx.get_value().screen.set(Screen::Library)
+        move |_: leptos::ev::MouseEvent| sctx.get_value().navigate(Screen::Library)
     };
-    let nav_downloads = move |_: leptos::ev::MouseEvent| sctx.get_value().screen.set(Screen::Downloads);
+    let nav_downloads = move |_: leptos::ev::MouseEvent| sctx.get_value().navigate(Screen::Downloads);
 
     view! {
         <div class="shell">
