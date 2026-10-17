@@ -5,7 +5,7 @@ services:
     container_name: jellydownloader
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "3002:3001"
     volumes:
       # Finished files + job/session state live on the host
       - ./downloads:/app/downloads
