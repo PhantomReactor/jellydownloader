@@ -113,7 +113,7 @@ pub fn ItemModal() -> impl IntoView {
                                 {d.overview.clone().map(|o| view!{ <p class="modal-overview">{o}</p> })}
 
                                 <div class="quality-label">"Quality"</div>
-                                <p class="quality-note">"Transcodes keep the source codec and scale the bitrate with the resolution."</p>
+                                <p class="quality-note">"Bitrate scales with resolution: ≤1080p keep the source codec (HEVC stays HEVC); 4K sources encode to H.264 for speed."</p>
                                 <div class="quality-list">
                                     {presets.iter().filter(|p| {
                                         // Tiers at or above the source resolution are pointless

@@ -823,10 +823,24 @@ fn normalize_codec(raw: &str) -> String {
 /// inflating to a fixed 8 Mbps H.264 target).
 fn compute_transcode_params(detail: &ItemDetail, preset: &QualityPreset) -> TranscodeParams {
     let media = detail.media.as_ref();
-    let codec = media
+    let mut codec = media
         .and_then(|m| m.video_codec.clone())
         .map(|c| normalize_codec(&c))
         .unwrap_or_else(|| "h264".to_string());
+
+    // Software HEVC cannot keep up beyond ~1080p (single-digit fps on 4K means
+    // the job would effectively never finish); switch those to H.264.
+    let px = media.and_then(|m| m.width.map(|w| w as u64 * m.height.unwrap_or(0) as u64));
+    if codec == "hevc" {
+        if let Some(p) = px.filter(|p| *p > 2_600_000) {
+            tracing::info!(
+                item = %detail.name,
+                px = p,
+                "source above 1080p: using h264 encoder (hevc would be unusably slow)"
+            );
+            codec = "h264".to_string();
+        }
+    }
 
     let media_source_id = media.and_then(|m| m.source_id.clone());
     let src_dim = media.and_then(|m| m.width.map(|w| w.max(m.height.unwrap_or(0))));
