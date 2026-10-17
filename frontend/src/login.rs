@@ -74,20 +74,24 @@ pub fn LoginPage() -> impl IntoView {
                     <h1>"jellydown"</h1>
                     <p>"Sign in to your Jellyfin server"</p>
                 </div>
-                <label class="field">
-                    <span>"Server URL"</span>
-                    <input
-                        type="text"
-                        placeholder="http://192.168.1.100:8096"
-                        prop:value=move || server.get()
-                        prop:disabled=move || fixed_server.get().is_some()
-                        on:input=move |e| set_server.set(event_target_value(&e))
-                        autocomplete="url"
-                        spellcheck="false"
-                    />
-                </label>
+                <Show when=move || fixed_server.get().is_none()>
+                    <label class="field">
+                        <span>"Server URL"</span>
+                        <input
+                            type="text"
+                            placeholder="http://192.168.1.100:8096"
+                            prop:value=move || server.get()
+                            on:input=move |e| set_server.set(event_target_value(&e))
+                            autocomplete="url"
+                            spellcheck="false"
+                        />
+                    </label>
+                </Show>
                 <Show when=move || fixed_server.get().is_some()>
-                    <p class="login-hint" style="margin:-6px 0 12px; text-align:left;">"Pinned by the server operator — downloads use this address."</p>
+                    <p class="pinned-line">
+                        <span>"Signed-in Jellyfin:"</span>
+                        <span class="mono">{move || fixed_server.get().unwrap_or_default()}</span>
+                    </p>
                 </Show>
                 <label class="field">
                     <span>"Username"</span>
