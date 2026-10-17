@@ -142,6 +142,7 @@ fn movie_detail(id: &str) -> serde_json::Value {
         "Overview": "A mock movie served by the fake Jellyfin server.",
         "RunTimeTicks": 300_000_000,
         "MediaSources": [{
+            "Id": "ms-m1",
             "Container": "mp4",
             "Size": std::fs::metadata(format!("{MEDIA_DIR}/original.mp4")).map(|m| m.len()).unwrap_or(0),
             "MediaStreams": [
@@ -164,6 +165,7 @@ fn episode_detail(id: &str, num: i64) -> serde_json::Value {
         "RunTimeTicks": 300_000_000,
         "SeriesId": "s1",
         "MediaSources": [{
+            "Id": "ms-m1",
             "Container": "mp4",
             "Size": std::fs::metadata(format!("{MEDIA_DIR}/original.mp4")).map(|m| m.len()).unwrap_or(0),
             "MediaStreams": [

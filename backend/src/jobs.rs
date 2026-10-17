@@ -18,6 +18,8 @@ struct JobRuntime {
     creds: Credentials,
     /// Session that created the job (for auto-save delivery).
     owner_session: Option<String>,
+    /// Jellyfin MediaSource id (required on stream/transcode endpoints).
+    source_id: Option<String>,
     /// Codec/bitrate for transcode jobs (None for originals).
     transcode: Option<TranscodeParams>,
     is_audio: bool,
@@ -43,6 +45,7 @@ struct JobEntry {
 pub struct TranscodeParams {
     pub video_codec: String,
     pub video_bitrate: u64,
+    pub media_source_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -55,6 +58,8 @@ struct PersistedJob {
     final_name: String,
     #[serde(default)]
     owner_session: Option<String>,
+    #[serde(default)]
+    source_id: Option<String>,
     #[serde(default)]
     transcode: Option<TranscodeParams>,
 }
@@ -127,6 +132,7 @@ impl JobManager {
                         job: job.clone(),
                         rt: JobRuntime {
                             owner_session: p.owner_session,
+                            source_id: p.source_id,
                             transcode: p.transcode,
                             creds: Credentials {
                                 server_url: p.creds.server_url,
@@ -179,6 +185,7 @@ impl JobManager {
                     container_ext: e.rt.container_ext.clone(),
                     final_name: e.rt.final_name.clone(),
                     owner_session: e.rt.owner_session.clone(),
+                    source_id: e.rt.source_id.clone(),
                     transcode: e.rt.transcode.clone(),
                 })
                 .collect(),
@@ -325,6 +332,7 @@ impl JobManager {
             job,
             rt: JobRuntime {
                 owner_session,
+                source_id: detail.media.as_ref().and_then(|m| m.source_id.clone()),
                 transcode,
                 creds,
                 is_audio,
@@ -362,6 +370,7 @@ impl JobManager {
             creds: e.rt.creds.clone(),
             is_audio: e.rt.is_audio,
             run_ticks: e.rt.run_ticks,
+            source_id: e.rt.source_id.clone(),
             transcode: e.rt.transcode.clone(),
             tmp_dir: e.rt.tmp_dir.clone(),
             final_name: e.rt.final_name.clone(),
@@ -667,6 +676,7 @@ pub struct EntrySnapshot {
     pub creds: Credentials,
     pub is_audio: bool,
     pub run_ticks: Option<i64>,
+    pub source_id: Option<String>,
     pub transcode: Option<TranscodeParams>,
     pub tmp_dir: PathBuf,
     pub final_name: String,
@@ -694,6 +704,7 @@ fn compute_transcode_params(detail: &ItemDetail, preset: &QualityPreset) -> Tran
         .map(|c| normalize_codec(&c))
         .unwrap_or_else(|| "h264".to_string());
 
+    let media_source_id = media.and_then(|m| m.source_id.clone());
     let src_dim = media.and_then(|m| m.width.map(|w| w.max(m.height.unwrap_or(0))));
     let target_dim = preset.max_width.or(preset.max_height).unwrap_or(1920);
 
@@ -711,7 +722,7 @@ fn compute_transcode_params(detail: &ItemDetail, preset: &QualityPreset) -> Tran
         }
         _ => preset.video_bitrate.unwrap_or(4_000_000),
     };
-    TranscodeParams { video_codec: codec, video_bitrate: bps }
+    TranscodeParams { video_codec: codec, video_bitrate: bps, media_source_id }
 }
 
 /// Human-friendly file base name for an item.

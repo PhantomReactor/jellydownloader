@@ -36,7 +36,7 @@ pub fn quality_presets() -> Vec<QualityPreset> {
         },
         QualityPreset {
             id: "1080p".to_string(),
-            label: "1080p · 8 Mbps".to_string(),
+            label: "1080p".to_string(),
             kind: QualityKind::Transcode,
             video_bitrate: Some(8_000_000),
             audio_bitrate: Some(128_000),
@@ -46,7 +46,7 @@ pub fn quality_presets() -> Vec<QualityPreset> {
         },
         QualityPreset {
             id: "720p".to_string(),
-            label: "720p · 4 Mbps".to_string(),
+            label: "720p".to_string(),
             kind: QualityKind::Transcode,
             video_bitrate: Some(4_000_000),
             audio_bitrate: Some(128_000),
@@ -56,7 +56,7 @@ pub fn quality_presets() -> Vec<QualityPreset> {
         },
         QualityPreset {
             id: "480p".to_string(),
-            label: "480p · 1.5 Mbps".to_string(),
+            label: "480p".to_string(),
             kind: QualityKind::Transcode,
             video_bitrate: Some(1_500_000),
             audio_bitrate: Some(128_000),
@@ -109,6 +109,8 @@ pub struct ItemSummary {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaInfo {
+    /// Jellyfin MediaSource id (needed for stream/transcode endpoints).
+    pub source_id: Option<String>,
     pub container: Option<String>,
     pub video_codec: Option<String>,
     pub width: Option<u32>,

@@ -31,7 +31,7 @@ pub async fn run(mgr: Arc<JobManager>, id: String) {
 }
 
 async fn run_inner(mgr: &Arc<JobManager>, id: &str) -> Result<PathBuf> {
-    let (job, creds, is_audio, run_ticks, tmp_dir, final_name, downloads_dir, transcode) = {
+    let (job, creds, is_audio, run_ticks, tmp_dir, final_name, downloads_dir, source_id, transcode) = {
         let entry = mgr.get_entry(id).ok_or_else(|| anyhow!("job vanished"))?;
         (
             entry.job,
@@ -41,6 +41,7 @@ async fn run_inner(mgr: &Arc<JobManager>, id: &str) -> Result<PathBuf> {
             entry.tmp_dir.clone(),
             entry.final_name.clone(),
             entry.downloads_dir.clone(),
+            entry.source_id,
             entry.transcode,
         )
     };
@@ -48,9 +49,9 @@ async fn run_inner(mgr: &Arc<JobManager>, id: &str) -> Result<PathBuf> {
     let ctx = EngineCtx { http: engine_client() };
 
     let path = match preset.kind {
-        QualityKind::Original => download_original(&ctx, mgr, &job, &creds, is_audio, &tmp_dir, &downloads_dir, &final_name).await?,
+        QualityKind::Original => download_original(&ctx, mgr, &job, &creds, is_audio, source_id.as_deref(), &tmp_dir, &downloads_dir, &final_name).await?,
         QualityKind::Transcode => {
-            download_transcode(&ctx, mgr, &job, &creds, run_ticks, &tmp_dir, &preset, transcode).await?;
+            download_transcode(&ctx, mgr, &job, &creds, run_ticks, &tmp_dir, &preset, source_id, transcode).await?;
             mgr.set_state(id, JobState::Remuxing);
             let final_path = remux(&job, &tmp_dir, &downloads_dir, &final_name).await?;
             let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -117,11 +118,12 @@ async fn download_original(
     job: &DownloadJob,
     creds: &crate::jellyfin::Credentials,
     is_audio: bool,
+    source_id: Option<&str>,
     tmp_dir: &Path,
     downloads_dir: &Path,
     final_name: &str,
 ) -> Result<PathBuf> {
-    let url = crate::jellyfin::JellyfinClient::static_stream_url(creds, &job.item_id, is_audio);
+    let url = crate::jellyfin::JellyfinClient::static_stream_url(creds, &job.item_id, is_audio, source_id);
     let part = part_file_path(tmp_dir);
 
     // The part file is the source of truth for how much we already have.
@@ -271,6 +273,18 @@ fn existing_segment_count(tmp_dir: &Path) -> usize {
         .unwrap_or(0)
 }
 
+/// URLs carry the api_key; keep it out of user-visible errors.
+fn redact(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(mut u) => {
+            u.query_pairs_mut().clear();
+            u.set_query(None);
+            u.to_string()
+        }
+        Err(_) => "<url>".to_string(),
+    }
+}
+
 async fn fetch_text(ctx: &EngineCtx, url: &str, token: &str) -> Result<String> {
     let resp = ctx
         .http
@@ -279,8 +293,13 @@ async fn fetch_text(ctx: &EngineCtx, url: &str, token: &str) -> Result<String> {
         .timeout(Duration::from_secs(20))
         .send()
         .await
-        .with_context(|| format!("fetching {url}"))?
-        .error_for_status()?;
+        .with_context(|| format!("requesting {}", redact(url)))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let short: String = body.chars().take(220).collect();
+        bail!("Jellyfin returned HTTP {status} for {}: {short}", redact(url));
+    }
     Ok(resp.text().await?)
 }
 
@@ -342,6 +361,7 @@ async fn download_transcode(
     run_ticks: Option<i64>,
     tmp_dir: &Path,
     preset: &shared::QualityPreset,
+    source_id: Option<String>,
     transcode: Option<crate::jobs::TranscodeParams>,
 ) -> Result<()> {
     // Source-codec passthrough (e.g. HEVC -> HEVC); fall back to H.264 if the
@@ -350,7 +370,8 @@ async fn download_transcode(
         Some(t) => (t.video_codec.clone(), t.video_bitrate),
         None => ("h264".to_string(), preset.video_bitrate.unwrap_or(4_000_000)),
     };
-    let master_url = crate::jellyfin::JellyfinClient::hls_master_url(creds, &job.item_id, preset, &codec, bitrate);
+    let msid = transcode.as_ref().and_then(|t| t.media_source_id.clone()).or(source_id);
+    let master_url = crate::jellyfin::JellyfinClient::hls_master_url(creds, &job.item_id, preset, &codec, bitrate, msid.as_deref());
     let mut done_count = existing_segment_count(tmp_dir);
     mgr.set_segments(&job.id, done_count as u32, None);
 
@@ -369,7 +390,7 @@ async fn download_transcode(
                 warn!(job = %job.id, "transcode with {codec} failed ({e:#}); retrying with h264");
                 codec = "h264".to_string();
                 bitrate = preset.video_bitrate.unwrap_or(4_000_000);
-                let fallback = crate::jellyfin::JellyfinClient::hls_master_url(creds, &job.item_id, preset, &codec, bitrate);
+                let fallback = crate::jellyfin::JellyfinClient::hls_master_url(creds, &job.item_id, preset, &codec, bitrate, msid.as_deref());
                 resolve_playlist(ctx, &fallback, &creds.token).await?
             }
             Err(e) => return Err(e),

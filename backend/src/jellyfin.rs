@@ -288,12 +288,16 @@ impl JellyfinClient {
     }
 
     /// URL for the original file (range-capable static stream).
-    pub fn static_stream_url(c: &Credentials, item_id: &str, is_audio: bool) -> String {
+    pub fn static_stream_url(c: &Credentials, item_id: &str, is_audio: bool, media_source_id: Option<&str>) -> String {
         let base = if is_audio { "Audio" } else { "Videos" };
-        format!(
+        let mut url = format!(
             "{}/{}/{item_id}/stream?static=true&api_key={}",
             c.server_url, base, c.token
-        )
+        );
+        if let Some(sid) = media_source_id {
+            url.push_str(&format!("&MediaSourceId={sid}"));
+        }
+        url
     }
 
     /// URL for the transcoding master playlist with a target quality.
@@ -305,15 +309,21 @@ impl JellyfinClient {
         preset: &shared::QualityPreset,
         video_codec: &str,
         video_bitrate: u64,
+        media_source_id: Option<&str>,
     ) -> String {
-        format!(
+        let mut url = format!(
             "{}/Videos/{item_id}/master.m3u8?api_key={}&VideoCodec={video_codec}&AudioCodec=aac&VideoBitrate={video_bitrate}&AudioBitrate={}&MaxWidth={}&MaxHeight={}",
             c.server_url,
             c.token,
             preset.audio_bitrate.unwrap_or(128_000),
             preset.max_width.unwrap_or(1920),
             preset.max_height.unwrap_or(1080),
-        )
+        );
+        // Required by the API model — without it Jellyfin answers 400.
+        if let Some(sid) = media_source_id {
+            url.push_str(&format!("&MediaSourceId={sid}"));
+        }
+        url
     }
 }
 
@@ -349,6 +359,7 @@ fn extract_media_info(body: &serde_json::Value) -> Option<MediaInfo> {
         }
     }
     Some(MediaInfo {
+        source_id: src.get("Id").and_then(|i| i.as_str()).map(String::from),
         container: src.get("Container").and_then(|c| c.as_str()).map(String::from),
         video_codec,
         width,
