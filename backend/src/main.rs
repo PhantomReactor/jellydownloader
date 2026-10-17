@@ -32,7 +32,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let config = Arc::new(config::Config::load());
+    let mut config = config::Config::load();
+    config.server_url =
+        jellyfin::normalize_server_url(&config.server_url).expect("config.json: invalid server_url");
+    let config = Arc::new(config);
     std::fs::create_dir_all(&config.downloads_dir)?;
     std::fs::create_dir_all(&config.data_dir)?;
 

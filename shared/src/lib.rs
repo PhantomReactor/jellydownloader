@@ -73,7 +73,6 @@ pub fn preset_by_id(id: &str) -> Option<QualityPreset> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginRequest {
-    pub server_url: String,
     pub username: String,
     pub password: String,
 }

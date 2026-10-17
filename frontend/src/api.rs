@@ -58,17 +58,8 @@ pub async fn delete_req<T: DeserializeOwned>(path: String) -> Result<T, String> 
     }
 }
 
-pub async fn login(server_url: String, username: String, password: String) -> Result<User, String> {
-    post::<User>("/api/login", &LoginRequest { server_url, username, password }).await
-}
-
-#[derive(Clone, serde::Deserialize)]
-pub struct AppConfig {
-    pub server_url: Option<String>,
-}
-
-pub async fn app_config() -> Result<AppConfig, String> {
-    get("/api/config".to_string()).await
+pub async fn login(username: String, password: String) -> Result<User, String> {
+    post::<User>("/api/login", &LoginRequest { username, password }).await
 }
 
 pub async fn me() -> Result<User, String> {

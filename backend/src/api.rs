@@ -17,7 +17,6 @@ use std::sync::Arc;
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/health", get(health))
-        .route("/api/config", get(app_config))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
@@ -37,19 +36,8 @@ async fn health() -> impl IntoResponse {
     Json(json!({ "ok": true }))
 }
 
-/// Which Jellyfin server the operator pinned in config.json (if any).
-async fn app_config(State(st): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(json!({ "server_url": st.config.server_url }))
-}
-
 async fn login(State(st): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<LoginRequest>) -> Result<Response, ApiErr> {
-    // An operator-pinned server beats whatever the client typed.
-    let url_raw = st
-        .config
-        .server_url
-        .clone()
-        .unwrap_or(body.server_url);
-    let server_url = crate::jellyfin::normalize_server_url(&url_raw)
+    let server_url = crate::jellyfin::normalize_server_url(&st.config.server_url)
         .map_err(|e| ApiErr::bad(e.to_string()))?;
     let (creds, name) = st
         .jf
