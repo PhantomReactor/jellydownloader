@@ -8,7 +8,7 @@ mod login;
 mod toast;
 
 use downloads::DownloadsView;
-use icons::{IconDownload, IconFilm, IconLogout};
+use icons::{IconDownload, IconFilm, IconLogout, IconMenu};
 use item::{EpisodesModal, ItemModal};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -229,9 +229,46 @@ fn Shell() -> impl IntoView {
     };
     let nav_downloads = move |_: leptos::ev::MouseEvent| sctx.get_value().navigate(Screen::Downloads);
 
+    // On phones the sidebar becomes an off-canvas drawer behind this toggle.
+    let drawer = RwSignal::new(false);
+    let close_drawer = move |_: leptos::ev::MouseEvent| drawer.set(false);
+    let nav_library_drawer = {
+        let close_drawer = close_drawer.clone();
+        move |e: leptos::ev::MouseEvent| {
+            close_drawer(e);
+            sctx.get_value().navigate(Screen::Library)
+        }
+    };
+    let nav_downloads_drawer = {
+        let close_drawer = close_drawer.clone();
+        move |e: leptos::ev::MouseEvent| {
+            close_drawer(e);
+            sctx.get_value().navigate(Screen::Downloads)
+        }
+    };
+    let logout_drawer = {
+        let logout_c = logout.clone();
+        move |e: leptos::ev::MouseEvent| {
+            drawer.set(false);
+            logout_c(e);
+        }
+    };
+
     view! {
+        <button class="mobile-bar" on:click=move |_| drawer.set(true)>
+            <IconMenu size=20/>
+            <span class="brand-name">"jellydown"</span>
+            <Show when=move || (active_count.get() > 0) && sctx.get_value().screen.get() != Screen::Downloads>
+                <span class="badge bar-badge">{move || active_count.get()}</span>
+            </Show>
+        </button>
+        <div
+            class="drawer-backdrop"
+            class:show=move || drawer.get()
+            on:click=close_drawer
+        ></div>
         <div class="shell">
-            <aside class="sidebar">
+            <aside class="sidebar" class:open=move || drawer.get()>
                 <div class="brand">
                     <span class="brand-mark"></span>
                     <span class="brand-name">"jellydown"</span>
@@ -240,7 +277,7 @@ fn Shell() -> impl IntoView {
                     <button
                         class="nav-item"
                         class:active=move || sctx.get_value().screen.get() == Screen::Library
-                        on:click=nav_library
+                        on:click=move |e| nav_library_drawer(e)
                     >
                         <IconFilm size=17/>
                         <span>"Browse"</span>
@@ -248,7 +285,7 @@ fn Shell() -> impl IntoView {
                     <button
                         class="nav-item"
                         class:active=move || sctx.get_value().screen.get() == Screen::Downloads
-                        on:click=nav_downloads
+                        on:click=move |e| nav_downloads_drawer(e)
                     >
                         <IconDownload size=17/>
                         <span>"Downloads"</span>
@@ -262,7 +299,7 @@ fn Shell() -> impl IntoView {
                         <span class="side-name">{move || sctx.get_value().user.get().map(|u| u.name).unwrap_or_default()}</span>
                         <span class="side-host mono">{move || host.get()}</span>
                     </div>
-                    <button class="icon-btn" title="Sign out" on:click=logout>
+                    <button class="icon-btn" title="Sign out" on:click=logout_drawer>
                         <IconLogout size=15/>
                     </button>
                 </div>

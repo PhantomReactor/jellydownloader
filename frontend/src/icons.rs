@@ -33,5 +33,6 @@ icon!(IconTrash, view! { <path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 
 icon!(IconFilm, view! { <rect x="3" y="3" width="18" height="18" rx="3"/><path d="M7 3v18M17 3v18M3 8h18M3 16h18"/> });
 icon!(IconTv, view! { <rect x="3" y="5" width="18" height="13" rx="2"/><path d="m8 21 4-3 4 3"/> });
 icon!(IconX, view! { <path d="M18 6 6 18M6 6l12 12"/> });
+icon!(IconMenu, view! { <path d="M4 6h16M4 12h16M4 18h16"/> });
 icon!(IconLogout, view! { <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/> });
 icon!(IconCheck, view! { <path d="M20 6 9 17l-5-5"/> });
