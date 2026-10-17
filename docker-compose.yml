@@ -8,8 +8,8 @@ services:
       - "3002:3001"
     volumes:
       # Finished files + job/session state live on their own drive
-      - /data/jellydownloader/downloads:/data/downloads
-      - /data/jellydownloader/data:/data/data
+      - /data/jellydownloader/downloads:/data/jellydownloader/downloads
+      - /data/jellydownloader/data:/data/jellydownloader/data
       # Operator settings (port, parallel slots, pinned Jellyfin URL, cleanup)
       - ./config.json:/app/config.json
     # If Jellyfin itself listens on this same host, entering http://<host-LAN-IP>:8096
