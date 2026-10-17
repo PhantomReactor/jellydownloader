@@ -57,9 +57,10 @@ Log into it from the UI with any username/password.
 | `downloads_dir`     | `downloads`      | finished files land here                 |
 | `data_dir`          | `data`           | job state + sessions (survive restarts)  |
 
-(Paths are relative to the app's working dir inside the container; with the
-shipped compose the host side is `/data/jellydownloader/{downloads,data}` — a
-separate drive if you mount one there.)
+(With the shipped compose, the app's paths *inside the container* should
+mirror the host drive: `downloads_dir: /data/jellydownloader/downloads` and
+`data_dir: /data/jellydownloader/data` — one namespaced home per app, no
+bare-generic directories on a shared drive.)
 | `parallel_downloads`| `3`              | max concurrent jobs                      |
 | `cleanup_hours`     | `24`             | auto-delete finished files after N hours; `0` disables |
 | `frontend_dist`     | `../frontend/dist`| override with `JD_DIST` env var         |
