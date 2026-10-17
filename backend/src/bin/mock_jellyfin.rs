@@ -18,6 +18,9 @@ struct MockState {
     original: Bytes,
     segs: Vec<Bytes>,
     playlist: Arc<String>,
+    init: Bytes,
+    /// When the "transcode" started; segment i becomes available 1.5s after this.
+    started: std::time::Instant,
 }
 
 const MEDIA_DIR: &str = "/tmp/opencode/mockmedia";
@@ -61,16 +64,45 @@ async fn main() {
     for i in 0..10u32 {
         segs.push(Bytes::from(std::fs::read(format!("{MEDIA_DIR}/seg_{i:02}.ts")).unwrap()));
     }
-    let mut pl = String::from("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:3\n#EXT-X-MEDIA-SEQUENCE:0\n");
+    // fMP4 style: init segment + ENDLIST up front (like Jellyfin's VOD playlists),
+    // while segment bytes are muxed lazily by the "encoder" (see lazy handler).
+    let mut pl = String::from(
+        "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:3\n#EXT-X-MEDIA-SEQUENCE:0\n",
+    );
+    pl.push_str("#EXT-X-MAP:URI=\"m3u8/mock/init.mp4\"\n");
     for i in 0..10u32 {
-        pl.push_str(&format!("#EXTINF:3.000000,\nm3u8/mock/seg_{i:02}.ts\n"));
+        pl.push_str(&format!("#EXTINF:3.000000,\nm3u8/mock/seg_{i:02}.m4s\n"));
     }
     pl.push_str("#EXT-X-ENDLIST\n");
+
+    // A minimal (invalid-codec but structurally fine) init segment: concat the
+    // test segments" moov boxes is overkill; ffmpeg accepts whatever if we
+    // actually feed valid fmp4. Use a tiny valid fmp4 init: generate one.
+    let init_status = std::process::Command::new("ffmpeg")
+        .args([
+            "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=0.04",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=0.04",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-movflags", "+frag_keyframe+empty_moov",
+            "-f", "mp4", &format!("{MEDIA_DIR}/init_ref.mp4"),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let init = if init_status {
+        Bytes::from(std::fs::read(format!("{MEDIA_DIR}/init_ref.mp4")).unwrap())
+    } else {
+        Bytes::new()
+    };
 
     let state = Arc::new(MockState {
         original: Bytes::from(original),
         segs,
         playlist: Arc::new(pl),
+        init,
+        started: std::time::Instant::now(),
     });
 
     let app = Router::new()
@@ -287,6 +319,33 @@ async fn master_m3u8(State(st): State<Arc<MockState>>) -> Response {
 }
 
 async fn segment(State(st): State<Arc<MockState>>, Path((_id, seg)): Path<(String, String)>) -> Response {
+    if seg == "init.mp4" {
+        // "encoder" needs 2s before the init segment exists
+        let waited = st.started.elapsed() > std::time::Duration::from_secs(2)
+            || st.started.elapsed() < std::time::Duration::from_millis(50);
+        if !waited {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        return Response::builder()
+            .header(header::CONTENT_TYPE, "video/mp4")
+            .body(Body::from(st.init.clone()))
+            .unwrap();
+    }
+    // lazy fMP4 segment: succeed only once its "encode turn" passed
+    if let Some(idx) = seg.strip_prefix("seg_").and_then(|r| r.trim_end_matches(".m4s").parse::<usize>().ok()) {
+        if (idx as usize) < st.segs.len() {
+            let available_at = std::time::Duration::from_millis(1500 * (idx as u64 + 1));
+            let since = st.started.elapsed();
+            if available_at > since {
+                tokio::time::sleep(available_at - since).await;
+            }
+            return Response::builder()
+                .header(header::CONTENT_TYPE, "video/iso.segment")
+                .body(Body::from(st.segs[idx].clone()))
+                .unwrap();
+        }
+    }
+    // legacy TS route
     let idx: Option<u32> = seg.trim_start_matches("seg_").trim_end_matches(".ts").parse().ok();
     match idx.filter(|i| (*i as usize) < st.segs.len()) {
         Some(i) => Response::builder()

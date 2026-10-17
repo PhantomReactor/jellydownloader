@@ -399,8 +399,18 @@ async fn download_transcode(
             Some(u) => u.clone(),
             None => master_url.clone(),
         };
+        tracing::info!(job = %job.id, segments = %done_count, "fetching HLS playlist");
         let (playlist, resolved_url) = match resolve_playlist(ctx, &url, &creds.token).await {
-            Ok(r) => r,
+            Ok(r) => {
+                tracing::info!(
+                    job = %job.id,
+                    listed = r.0.segs.len(),
+                    endlist = r.0.endlist,
+                    has_init = r.0.init_uri.is_some(),
+                    "playlist resolved"
+                );
+                r
+            }
             Err(e) if first_try => {
                 warn!(job = %job.id, "transcode with {codec} failed ({e:#}); retrying with h264");
                 codec = "h264".to_string();
@@ -422,6 +432,7 @@ async fn download_transcode(
         }
 
         // fMP4: grab the init segment (moov) once; remux needs it first in the concat list.
+        tracing::info!(job = %job.id, "downloading init segment");
         if let Some(map_uri) = &playlist.init_uri {
             let init_dest = tmp_dir.join("init.mp4");
             if !init_dest.exists() {
@@ -450,9 +461,12 @@ async fn download_transcode(
         while done_count < total_segments {
             let (uri, _dur) = &playlist.segs[done_count];
             let dest = segment_file(tmp_dir, done_count);
+            let t0 = std::time::Instant::now();
+            tracing::info!(job = %job.id, seg = done_count, uri = %uri, "requesting segment");
             let bytes = download_segment(ctx, &creds.token, media_url.as_deref().unwrap_or(&master_url), uri, &dest)
                 .await
                 .with_context(|| format!("segment {done_count}"))?;
+            tracing::info!(job = %job.id, seg = done_count, ms = t0.elapsed().as_millis() as u64, bytes, "segment done");
             done_count += 1;
             let downloaded_secs: f64 = playlist.segs[..done_count].iter().map(|(_, d)| *d).sum();
             mgr.set_segments(&job.id, done_count as u32, Some(total_segments as u32));
