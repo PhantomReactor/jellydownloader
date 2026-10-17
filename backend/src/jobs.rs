@@ -76,9 +76,19 @@ struct PersistedState {
     jobs: Vec<PersistedJob>,
 }
 
-struct JobsInner {
+pub(crate) struct JobsInner {
     jobs: HashMap<String, JobEntry>,
     order: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CreateOutcome {
+    /// Fresh job, starting from scratch.
+    Created(DownloadJob),
+    /// An identical completed download already exists — file untouched.
+    Completed(DownloadJob),
+    /// The same item+quality is queued/active; nothing new started.
+    Active(DownloadJob),
 }
 
 pub struct JobManager {
@@ -164,7 +174,61 @@ impl JobManager {
             wake: tx,
         });
         tokio::spawn(scheduler_loop(Arc::clone(&mgr), rx));
+        let janitor = Arc::clone(&mgr);
+        tokio::spawn(async move {
+            // First pass soon after boot, then every 10 minutes.
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            loop {
+                janitor.cleanup_finished();
+                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+            }
+        });
         mgr
+    }
+
+    /// Delete completed files older than `cleanup_hours` and drop their list
+    /// entries; also prune entries whose file has vanished.
+    fn cleanup_finished(self: &Arc<Self>) {
+        let hours = self.config.cleanup_hours;
+        let now = SystemTime::now();
+        let mut doomed: Vec<(String, Option<PathBuf>)> = Vec::new();
+        {
+            let inner = self.inner.lock().unwrap();
+            for id in &inner.order.clone() {
+                let Some(e) = inner.jobs.get(id) else { continue };
+                if e.job.state != JobState::Completed {
+                    continue;
+                }
+                let path = e.rt.downloads_dir.join(&e.rt.final_name);
+                match std::fs::metadata(&path).and_then(|m| m.modified()) {
+                    Ok(mtime) => {
+                        let age = now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0);
+                        if hours > 0 && age > hours * 3600 {
+                            doomed.push((id.clone(), Some(path)));
+                        }
+                    }
+                    Err(_) => doomed.push((id.clone(), None)),
+                }
+            }
+        }
+        if doomed.is_empty() {
+            return;
+        }
+        {
+            let mut inner = self.inner.lock().unwrap();
+            for (id, file) in doomed {
+                if let Some(f) = file {
+                    let _ = std::fs::remove_file(&f);
+                }
+                if let Some(e) = inner.jobs.get(&id) {
+                    let _ = std::fs::remove_dir_all(&e.rt.tmp_dir);
+                }
+                inner.jobs.remove(&id);
+                inner.order.retain(|x| x != &id);
+                info!(job = %id, "cleaned up finished download");
+            }
+            self.persist(&inner);
+        }
     }
 
     fn persist(&self, inner: &JobsInner) {
@@ -268,7 +332,7 @@ impl JobManager {
         creds: Credentials,
         auto_save: bool,
         owner_session: Option<String>,
-    ) -> Result<DownloadJob> {
+    ) -> Result<CreateOutcome> {
         if detail.item_type == "Series" {
             anyhow::bail!("Select an episode to download, not the whole series");
         }
@@ -322,7 +386,10 @@ impl JobManager {
             auto_save,
         };
 
-        let mut inner = self.inner.lock().unwrap();
+        // Same item + same settings always yields the same output; never redo work.
+        if let Some(existing) = self.find_dupe(&detail.id, &preset.id, auto_save, owner_session.clone()) {
+            return Ok(existing);
+        }
         let transcode = if preset.kind == shared::QualityKind::Transcode {
             Some(compute_transcode_params(&detail, &preset))
         } else {
@@ -346,13 +413,70 @@ impl JobManager {
                 downloads_dir: self.config.downloads_dir.clone(),
             },
         };
+        let mut inner = self.inner.lock().unwrap();
         inner.order.push(id.clone());
         inner.jobs.insert(id.clone(), entry);
         self.persist(&inner);
         drop(inner);
         self.wake.send(()).ok();
         let job = self.get(&id).expect("just inserted").job;
-        Ok(job)
+        Ok(CreateOutcome::Created(job))
+    }
+
+    /// An existing job for the same item+quality, or None. Reuses completed files
+    /// outright; for anything in flight it transfers latest auto-save wishes to
+    /// the requesting session (files are deterministic per item+quality, so this
+    /// is always correct).
+    fn find_dupe(
+        &self,
+        item_id: &str,
+        quality_id: &str,
+        auto_save: bool,
+        owner_session: Option<String>,
+    ) -> Option<CreateOutcome> {
+        let mut inner = self.inner.lock().unwrap();
+        // find first (newest last; prefer newest entry)
+        let dup_id = inner
+            .order
+            .iter()
+            .rev()
+            .find(|id| {
+                inner
+                    .jobs
+                    .get(*id)
+                    .map(|e| e.job.item_id == item_id && e.job.quality_id == quality_id)
+                    .unwrap_or(false)
+            })?
+            .clone();
+        let e = inner.jobs.get_mut(&dup_id)?;
+        tracing::error!("DUPE: got entry, state {:?}", e.job.state);
+        let job = e.job.clone();
+        let path = e.rt.downloads_dir.join(&e.rt.final_name);
+        match e.job.state {
+            JobState::Completed if path.exists() => {
+                e.job.auto_save = auto_save;
+                if owner_session.is_some() {
+                    e.rt.owner_session = owner_session;
+                }
+                self.persist(&inner);
+                Some(CreateOutcome::Completed(job))
+            }
+            JobState::Completed => {
+                // File vanished (cleanup) — drop the stale entry entirely.
+                inner.jobs.remove(&dup_id);
+                inner.order.retain(|x| x != &dup_id);
+                self.persist(&inner);
+                None
+            }
+            _ => {
+                if owner_session.is_some() {
+                    e.rt.owner_session = owner_session;
+                    e.job.auto_save = auto_save;
+                }
+                self.persist(&inner);
+                Some(CreateOutcome::Active(job))
+            }
+        }
     }
 
     pub fn get(&self, id: &str) -> Option<JobEntryClone> {

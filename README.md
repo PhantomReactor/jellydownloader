@@ -57,6 +57,7 @@ Log into it from the UI with any username/password.
 | `downloads_dir`     | `downloads`      | finished files land here                 |
 | `data_dir`          | `data`           | job state + sessions (survive restarts)  |
 | `parallel_downloads`| `3`              | max concurrent jobs                      |
+| `cleanup_hours`     | `24`             | auto-delete finished files after N hours; `0` disables |
 | `frontend_dist`     | `../frontend/dist`| override with `JD_DIST` env var         |
 
 ## Deployment (exposed externally)
@@ -92,6 +93,11 @@ backend/   axum server, Jellyfin client, download queue + engine, mock server
 frontend/  leptos CSR app (trunk), hand-rolled dark UI
 shared/    API types shared by both sides
 ```
+
+Requesting the same item + quality twice never re-transcodes: identical jobs are
+deduplicated at creation (completed ones are reused instantly, anything in-flight
+is pointed at instead). Finished files are wiped 24 h after completion unless
+`cleanup_hours` says otherwise.
 
 Paused/stopped jobs keep their partial data and continue where they left off;
 state is persisted across app restarts. Transcoded jobs are resumable per segment

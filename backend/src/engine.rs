@@ -22,7 +22,9 @@ fn engine_client() -> reqwest::Client {
 }
 
 pub async fn run(mgr: Arc<JobManager>, id: String) {
+    tracing::error!("ENGINE: run started");
     let result = run_inner(&mgr, &id).await;
+    tracing::error!("ENGINE: run done");
     match result {
         Ok(path) => mgr.finish(&id, path),
         Err(e) => mgr.fail(&id, &e.to_string()),

@@ -93,7 +93,14 @@ pub async fn episodes(series_id: String) -> Result<Vec<ItemSummary>, String> {
     get(format!("/api/series/{series_id}/episodes")).await
 }
 
-pub async fn create_download(item_id: String, quality_id: String, auto_save: bool) -> Result<DownloadJob, String> {
+#[derive(Clone, serde::Deserialize)]
+pub struct CreateResult {
+    pub job: DownloadJob,
+    /// "completed" = identical download already finished; "active" = already queued.
+    pub existing: Option<String>,
+}
+
+pub async fn create_download(item_id: String, quality_id: String, auto_save: bool) -> Result<CreateResult, String> {
     post("/api/downloads", &CreateDownloadRequest { item_id, quality_id, auto_save }).await
 }
 

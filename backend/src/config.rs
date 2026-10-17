@@ -10,8 +10,17 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// How many jobs may run at once.
     pub parallel_downloads: u32,
+    /// Auto-delete completed download files + records this many hours after
+    /// they were finished. 0 disables cleanup. Also trims list entries whose
+    /// file has disappeared.
+    #[serde(default = "default_cleanup_hours")]
+    pub cleanup_hours: u64,
     /// Compiled frontend assets. Overridable with JD_DIST env var.
     pub frontend_dist: String,
+}
+
+fn default_cleanup_hours() -> u64 {
+    24
 }
 
 impl Default for Config {
@@ -21,6 +30,7 @@ impl Default for Config {
             downloads_dir: PathBuf::from("downloads"),
             data_dir: PathBuf::from("data"),
             parallel_downloads: 3,
+            cleanup_hours: 24,
             frontend_dist: "../frontend/dist".to_string(),
         }
     }

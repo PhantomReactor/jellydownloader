@@ -159,11 +159,16 @@ async fn create_download(
         .item_detail(&creds, &body.item_id)
         .await
         .map_err(|e| ApiErr::bad(format!("{e:#}")))?;
-    let job = st
+    let outcome = st
         .jobs
         .create(detail, preset, creds, body.auto_save, Some(session.id))
         .map_err(|e| ApiErr::bad(format!("{e:#}")))?;
-    Ok(Json(json!(job)))
+    let (job, existing) = match outcome {
+        crate::jobs::CreateOutcome::Created(j) => (j, None),
+        crate::jobs::CreateOutcome::Completed(j) => (j, Some("completed")),
+        crate::jobs::CreateOutcome::Active(j) => (j, Some("active")),
+    };
+    Ok(Json(json!({ "job": job, "existing": existing })))
 }
 
 async fn list_downloads(State(st): State<Arc<AppState>>, headers: HeaderMap) -> Json<serde_json::Value> {

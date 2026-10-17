@@ -186,7 +186,7 @@ fn JobRow(job_id: String) -> impl IntoView {
                         <div class="dl-top">
                             <span class="dl-name" title=j.item_name.clone()>{j.item_name.clone()}</span>
                             <span class="chip">{j.quality_label.clone()}</span>
-                            <span class="chip state-chip" data-state=j.state.as_str()>{state_label(j.state)}</span>
+                            <span class="chip state-chip" data-state=j.state.as_str()>{state_label(&j)}</span>
                         </div>
                         <div class="progress" class:running=running>
                             <div class="progress-fill" style=format!("width:{pct_width}")></div>
@@ -209,10 +209,18 @@ fn JobRow(job_id: String) -> impl IntoView {
     }
 }
 
-fn state_label(s: JobState) -> &'static str {
-    match s {
+/// The server-side work isn't "downloading" for transcodes — spell out what's
+/// happening so users aren't confused about double transfers.
+fn state_label(j: &DownloadJob) -> &'static str {
+    match j.state {
         JobState::Queued => "Queued",
-        JobState::Running => "Downloading",
+        JobState::Running => {
+            if j.quality_id == "original" {
+                "Copying from Jellyfin"
+            } else {
+                "Transcoding"
+            }
+        }
         JobState::Paused => "Paused",
         JobState::Stopped => "Stopped",
         JobState::Remuxing => "Packaging",
