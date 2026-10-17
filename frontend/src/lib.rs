@@ -188,19 +188,15 @@ fn App() -> impl IntoView {
 fn Shell() -> impl IntoView {
     let sctx = StoredValue::new(use_context::<AppCtx>().expect("app context"));
 
-    let host = Memo::new(move |_| {
-        sctx.get_value()
-            .user
-            .get()
-            .as_ref()
-            .map(|u| {
-                u.server_url
-                    .trim_start_matches("http://")
-                    .trim_start_matches("https://")
-                    .to_string()
-            })
-            .unwrap_or_default()
-    });
+    // Show the app's own origin (matches the address bar) — the Jellyfin URL
+    // stays internal and is irrelevant to users.
+    let app_host = RwSignal::new(String::new());
+    if let Some(window) = web_sys::window() {
+        let loc = window.location();
+        if let Ok(h) = loc.host() {
+            app_host.set(h);
+        }
+    }
 
     let active_count = Memo::new(move |_| {
         sctx.get_value()
@@ -297,7 +293,7 @@ fn Shell() -> impl IntoView {
                 <div class="side-foot">
                     <div class="side-user">
                         <span class="side-name">{move || sctx.get_value().user.get().map(|u| u.name).unwrap_or_default()}</span>
-                        <span class="side-host mono">{move || host.get()}</span>
+                        <span class="side-host mono">{move || app_host.get()}</span>
                     </div>
                     <button class="icon-btn" title="Sign out" on:click=logout_drawer>
                         <IconLogout size=15/>
