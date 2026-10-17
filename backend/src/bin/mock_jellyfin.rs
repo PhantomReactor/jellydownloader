@@ -153,6 +153,19 @@ fn base_items() -> serde_json::Value {
 
 async fn items(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> impl IntoResponse {
     let mut resp = base_items();
+    // ParentId scoping: movies / tv libraries contain only their own kind
+    if let Some(pid) = q.get("ParentId") {
+        let keep: Option<&str> = match pid.as_str() {
+            "lib-movies" => Some("Movie"),
+            "lib-tv" => Some("Series"),
+            _ => None,
+        };
+        if let Some(ty) = keep {
+            let items = resp["Items"].as_array().cloned().unwrap_or_default();
+            let filtered: Vec<_> = items.into_iter().filter(|i| i["Type"] == *ty).collect();
+            resp["Items"] = json!(filtered);
+        }
+    }
     if let Some(term) = q.get("SearchTerm").filter(|t| !t.is_empty()) {
         let lower = term.to_lowercase();
         let items = resp["Items"].as_array().cloned().unwrap_or_default();

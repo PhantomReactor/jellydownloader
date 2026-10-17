@@ -33,7 +33,7 @@ pub fn LibraryView() -> impl IntoView {
 
     Effect::new(move |_| {
         let _token = reload.get();
-        let lib = sctx.get_value().active_library.get_untracked();
+        let lib = sctx.get_value().active_library.get();
         let term = search_input.get_untracked();
         spawn_local(async move {
             loading.try_set(true);

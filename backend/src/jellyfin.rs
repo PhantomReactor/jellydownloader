@@ -156,9 +156,14 @@ impl JellyfinClient {
             .error_for_status()?
             .json()
             .await?;
+        // Live TV / Playlists are synthetic "views" we can't download from.
         Ok(resp
             .items
             .into_iter()
+            .filter(|i| {
+                let t = i.collection_type.as_deref().unwrap_or("").to_lowercase();
+                !matches!(t.as_str(), "livetv" | "playlists") && !matches!(i.name.as_str(), "Live TV" | "Playlists")
+            })
             .map(|i| LibraryView {
                 id: i.id,
                 name: i.name,
