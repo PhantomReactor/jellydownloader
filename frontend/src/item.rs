@@ -3,14 +3,34 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use leptos::task::spawn_local;
 
+/// Classify by the *larger* dimension — cinemascope 1080p is 1920×800, so
+/// height alone mislabels it.
+fn res_label(w: Option<u32>, h: Option<u32>) -> &'static str {
+    let m = match (w, h) {
+        (Some(w), Some(h)) => w.max(h),
+        (Some(w), None) => w,
+        (None, Some(h)) => h,
+        (None, None) => 0,
+    };
+    match m {
+        v if v >= 3400 => "4K",
+        v if v >= 1800 => "1080p",
+        v if v >= 1200 => "720p",
+        v if v >= 640 => "480p",
+        v if v > 0 => "SD",
+        _ => "",
+    }
+}
+
 fn media_line(d: &shared::ItemDetail) -> String {
     let mut parts = Vec::new();
     if let Some(m) = &d.media {
         if let Some(c) = &m.video_codec {
             parts.push(c.to_uppercase());
         }
-        if let Some(h) = m.height {
-            parts.push(if h >= 2000 { "4K".into() } else if h >= 1000 { "1080p".into() } else if h >= 700 { "720p".into() } else { format!("{h}p") });
+        let res = res_label(m.width, m.height);
+        if !res.is_empty() {
+            parts.push(res.to_string());
         }
         if let Some(a) = &m.audio_codec {
             parts.push(a.to_uppercase());
@@ -97,10 +117,23 @@ pub fn ItemModal() -> impl IntoView {
                                     {presets.iter().map(|p| {
                                         let id = p.id.clone();
                                         let selected_id = id.clone();
-                                        let est = if p.kind == shared::QualityKind::Original {
-                                            d.media.as_ref().and_then(|m| m.size).map(fmt_bytes)
+                                        let original_size = d.media.as_ref().and_then(|m| m.size);
+                                        let est_text = if p.kind == shared::QualityKind::Original {
+                                            original_size.map(fmt_bytes).unwrap_or_default()
                                         } else {
-                                            estimate_size(p.estimate_bps, d.run_time_ticks).map(fmt_bytes).map(|s| format!("≈ {s}"))
+                                            estimate_size(p.estimate_bps, d.run_time_ticks)
+                                                .map(fmt_bytes)
+                                                .map(|s| format!("≈ {s}"))
+                                                .unwrap_or_default()
+                                        };
+                                        let bigger_than_original = p.kind == shared::QualityKind::Transcode
+                                            && original_size
+                                                .and_then(|o| estimate_size(p.estimate_bps, d.run_time_ticks).map(|b| b > o))
+                                                .unwrap_or(false);
+                                        let est_final = if bigger_than_original {
+                                            format!("{est_text} · bigger than original")
+                                        } else {
+                                            est_text
                                         };
                                         view! {
                                             <button
@@ -109,7 +142,7 @@ pub fn ItemModal() -> impl IntoView {
                                                 on:click=move |_| quality.set(id.clone())
                                             >
                                                 <span class="quality-name">{p.label.clone()}</span>
-                                                <span class="quality-est">{est.unwrap_or_default()}</span>
+                                                <span class="quality-est" class:warn=bigger_than_original>{est_final}</span>
                                             </button>
                                         }
                                     }).collect_view()}
