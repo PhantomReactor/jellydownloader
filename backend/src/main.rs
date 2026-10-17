@@ -85,8 +85,23 @@ async fn static_handler(State(state): State<Arc<AppState>>, req: Request) -> Res
             if file_path.is_file() {
                 if let Ok(bytes) = tokio::fs::read(&file_path).await {
                     let mime = mime_of(path);
+                    // Trunk emits content-hashed names for wasm/js/css/svg — those
+                    // are safely immortal; anything else is short-lived.
+                    let cache_control = if path.ends_with(".html") {
+                        "no-cache"
+                    } else if path
+                        .rsplit_once('-')
+                        .and_then(|(_, tail)| tail.split('.').next())
+                        .map(trailing_hash_ok)
+                        .unwrap_or(false)
+                    {
+                        "public, max-age=31536000, immutable"
+                    } else {
+                        "public, max-age=300"
+                    };
                     return Response::builder()
                         .header("content-type", mime)
+                        .header("cache-control", cache_control)
                         .body(Body::from(bytes))
                         .unwrap();
                 }
@@ -98,6 +113,8 @@ async fn static_handler(State(state): State<Arc<AppState>>, req: Request) -> Res
     match dist.as_ref().and_then(|d| std::fs::read(d.join("index.html")).ok()) {
         Some(bytes) => Response::builder()
             .header("content-type", "text/html; charset=utf-8")
+            // Never cache the shell — hashed assets carry their own versioning.
+            .header("cache-control", "no-cache")
             .body(Body::from(bytes))
             .unwrap(),
         None => Response::builder()
@@ -108,6 +125,14 @@ async fn static_handler(State(state): State<Arc<AppState>>, req: Request) -> Res
             ))
             .unwrap(),
     }
+}
+
+/// `frontend-a86d74555457ad8d_bg.wasm` → hash is the final hex-only `-` chunk.
+fn trailing_hash_ok(tail: &str) -> bool {
+    let stem = tail.split('.').next().unwrap_or(tail).split('_').next().unwrap_or("");
+    (8..=24).contains(&stem.len())
+        && stem.chars().all(|c| c.is_ascii_hexdigit())
+        && stem.chars().any(|c| c.is_ascii_alphabetic())
 }
 
 fn mime_of(path: &str) -> &'static str {

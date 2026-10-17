@@ -10,6 +10,8 @@ services:
       # Finished files + job/session state live on the host
       - ./downloads:/app/downloads
       - ./data:/app/data
+      # Operator settings (port, parallel slots, pinned Jellyfin URL, cleanup)
+      - ./config.json:/app/config.json
     # If Jellyfin itself listens on this same host, entering http://<host-LAN-IP>:8096
     # at login works fine from a bridged container. Should a URL ever be unreachable,
     # switch to host networking instead:
