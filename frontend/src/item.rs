@@ -113,22 +113,36 @@ pub fn ItemModal() -> impl IntoView {
                                 {d.overview.clone().map(|o| view!{ <p class="modal-overview">{o}</p> })}
 
                                 <div class="quality-label">"Quality"</div>
+                                <p class="quality-note">"Transcodes keep the source codec and scale the bitrate with the resolution."</p>
                                 <div class="quality-list">
-                                    {presets.iter().map(|p| {
+                                    {presets.iter().filter(|p| {
+                                        // Tiers at or above the source resolution are pointless
+                                        // re-encodes; the original already covers them.
+                                        if p.kind != shared::QualityKind::Transcode {
+                                            return true;
+                                        }
+                                        let src = d.media.as_ref()
+                                            .and_then(|m| m.width.map(|w| w.max(m.height.unwrap_or(0))));
+                                        let tgt = p.max_width.or(p.max_height);
+                                        match (src, tgt) {
+                                            (Some(s), Some(t)) => t < s,
+                                            _ => true,
+                                        }
+                                    }).map(|p| {
                                         let id = p.id.clone();
                                         let selected_id = id.clone();
                                         let original_size = d.media.as_ref().and_then(|m| m.size);
                                         let est_text = if p.kind == shared::QualityKind::Original {
                                             original_size.map(fmt_bytes).unwrap_or_default()
                                         } else {
-                                            estimate_size(p.estimate_bps, d.run_time_ticks)
+                                            estimate_size(p, d.media.as_ref(), d.run_time_ticks)
                                                 .map(fmt_bytes)
                                                 .map(|s| format!("≈ {s}"))
                                                 .unwrap_or_default()
                                         };
                                         let bigger_than_original = p.kind == shared::QualityKind::Transcode
                                             && original_size
-                                                .and_then(|o| estimate_size(p.estimate_bps, d.run_time_ticks).map(|b| b > o))
+                                                .and_then(|o| estimate_size(p, d.media.as_ref(), d.run_time_ticks).map(|b| b > o))
                                                 .unwrap_or(false);
                                         let est_final = if bigger_than_original {
                                             format!("{est_text} · bigger than original")

@@ -31,7 +31,7 @@ pub async fn run(mgr: Arc<JobManager>, id: String) {
 }
 
 async fn run_inner(mgr: &Arc<JobManager>, id: &str) -> Result<PathBuf> {
-    let (job, creds, is_audio, run_ticks, tmp_dir, final_name, downloads_dir) = {
+    let (job, creds, is_audio, run_ticks, tmp_dir, final_name, downloads_dir, transcode) = {
         let entry = mgr.get_entry(id).ok_or_else(|| anyhow!("job vanished"))?;
         (
             entry.job,
@@ -41,6 +41,7 @@ async fn run_inner(mgr: &Arc<JobManager>, id: &str) -> Result<PathBuf> {
             entry.tmp_dir.clone(),
             entry.final_name.clone(),
             entry.downloads_dir.clone(),
+            entry.transcode,
         )
     };
     let preset = preset_by_id(&job.quality_id).ok_or_else(|| anyhow!("unknown quality preset"))?;
@@ -49,7 +50,7 @@ async fn run_inner(mgr: &Arc<JobManager>, id: &str) -> Result<PathBuf> {
     let path = match preset.kind {
         QualityKind::Original => download_original(&ctx, mgr, &job, &creds, is_audio, &tmp_dir, &downloads_dir, &final_name).await?,
         QualityKind::Transcode => {
-            download_transcode(&ctx, mgr, &job, &creds, run_ticks, &tmp_dir, &preset).await?;
+            download_transcode(&ctx, mgr, &job, &creds, run_ticks, &tmp_dir, &preset, transcode).await?;
             mgr.set_state(id, JobState::Remuxing);
             let final_path = remux(&job, &tmp_dir, &downloads_dir, &final_name).await?;
             let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -220,30 +221,35 @@ struct Playlist {
     /// (segment uri, duration seconds)
     segs: Vec<(String, f64)>,
     endlist: bool,
+    /// fMP4 playlists carry an init segment (#EXT-X-MAP) with the moov box.
+    init_uri: Option<String>,
 }
 
 fn parse_playlist(text: &str) -> Playlist {
     let mut segs = Vec::new();
     let mut endlist = false;
     let mut pending_dur: Option<f64> = None;
-    let mut variant_uri: Option<String> = None;
+    let mut init_uri: Option<String> = None;
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with("#EXT-X-ENDLIST") {
             endlist = true;
+        } else if line.starts_with("#EXT-X-MAP:") {
+            init_uri = line.split("URI=").nth(1).and_then(|u| {
+                let u = u.trim().trim_matches('"');
+                Some(u.to_string())
+            });
         } else if line.starts_with("#EXTINF:") {
             let raw = line.trim_start_matches("#EXTINF:");
             let raw = raw.split(',').next().unwrap_or("0");
             pending_dur = raw.trim().parse::<f64>().ok();
         } else if line.starts_with('#') || line.is_empty() {
             continue;
-        } else if variant_uri.is_none() && text.contains("#EXT-X-STREAM-INF") && segs.is_empty() {
-            variant_uri = Some(line.to_string());
         } else {
             segs.push((line.to_string(), pending_dur.take().unwrap_or(0.0)));
         }
     }
-    Playlist { segs, endlist }
+    Playlist { segs, endlist, init_uri }
 }
 
 fn segment_file(tmp_dir: &Path, index: usize) -> PathBuf {
@@ -336,20 +342,39 @@ async fn download_transcode(
     run_ticks: Option<i64>,
     tmp_dir: &Path,
     preset: &shared::QualityPreset,
+    transcode: Option<crate::jobs::TranscodeParams>,
 ) -> Result<()> {
-    let master_url = crate::jellyfin::JellyfinClient::hls_master_url(creds, &job.item_id, preset);
+    // Source-codec passthrough (e.g. HEVC -> HEVC); fall back to H.264 if the
+    // server refuses to encode the requested codec.
+    let (mut codec, mut bitrate) = match &transcode {
+        Some(t) => (t.video_codec.clone(), t.video_bitrate),
+        None => ("h264".to_string(), preset.video_bitrate.unwrap_or(4_000_000)),
+    };
+    let master_url = crate::jellyfin::JellyfinClient::hls_master_url(creds, &job.item_id, preset, &codec, bitrate);
     let mut done_count = existing_segment_count(tmp_dir);
     mgr.set_segments(&job.id, done_count as u32, None);
 
     let item_total_secs = run_ticks_secs(run_ticks);
     let mut media_url: Option<String> = None;
+    let mut first_try = true;
 
     loop {
         let url = match &media_url {
             Some(u) => u.clone(),
             None => master_url.clone(),
         };
-        let (playlist, resolved_url) = resolve_playlist(ctx, &url, &creds.token).await?;
+        let (playlist, resolved_url) = match resolve_playlist(ctx, &url, &creds.token).await {
+            Ok(r) => r,
+            Err(e) if first_try => {
+                warn!(job = %job.id, "transcode with {codec} failed ({e:#}); retrying with h264");
+                codec = "h264".to_string();
+                bitrate = preset.video_bitrate.unwrap_or(4_000_000);
+                let fallback = crate::jellyfin::JellyfinClient::hls_master_url(creds, &job.item_id, preset, &codec, bitrate);
+                resolve_playlist(ctx, &fallback, &creds.token).await?
+            }
+            Err(e) => return Err(e),
+        };
+        first_try = false;
         media_url = Some(resolved_url);
 
         let playlist_total: f64 = playlist.segs.iter().map(|(_, d)| *d).sum();
@@ -358,6 +383,32 @@ async fn download_transcode(
 
         if playlist.endlist {
             mgr.set_segments(&job.id, done_count as u32, Some(total_segments as u32));
+        }
+
+        // fMP4: grab the init segment (moov) once; remux needs it first in the concat list.
+        if let Some(map_uri) = &playlist.init_uri {
+            let init_dest = tmp_dir.join("init.mp4");
+            if !init_dest.exists() {
+                let base = media_url.as_deref().unwrap_or(&master_url);
+                let init_part = tmp_dir.join("init.mp4.part");
+                let seg_url = url::Url::parse(base)?.join(map_uri)?.to_string();
+                let resp = ctx
+                    .http
+                    .get(&seg_url)
+                    .header("Authorization", auth_header(&creds.token))
+                    .send()
+                    .await
+                    .with_context(|| format!("fetching init segment {map_uri}"))?
+                    .error_for_status()?;
+                let mut f = std::fs::File::create(&init_part)?;
+                let mut stream = resp.bytes_stream();
+                while let Some(chunk) = stream.next().await {
+                    f.write_all(&chunk?)?;
+                }
+                f.flush()?;
+                drop(f);
+                std::fs::rename(&init_part, &init_dest)?;
+            }
         }
 
         while done_count < total_segments {
@@ -403,25 +454,43 @@ async fn remux(
     let concat_path = tmp_dir.join("concat.txt");
     {
         let mut f = std::fs::File::create(&concat_path)?;
+        // fMP4 playlists ship an init segment that must come first.
+        let init = tmp_dir.join("init.mp4");
+        if init.exists() {
+            writeln!(f, "file '{}'", init.canonicalize()?.to_string_lossy())?;
+        }
         for s in &segs {
             writeln!(f, "file '{}'", s.canonicalize()?.to_string_lossy())?;
         }
     }
+    // MPEG-TS carries ADTS AAC (needs aac_adtstoasc for mp4); fMP4 does not.
+    let is_ts = segs
+        .first()
+        .and_then(|p| std::fs::File::open(p).ok())
+        .and_then(|mut f| {
+            use std::io::Read;
+            let mut hdr = [0u8; 1];
+            f.read_exact(&mut hdr).ok().map(|_| hdr[0] == 0x47)
+        })
+        .unwrap_or(false);
     let out_part = tmp_dir.join("remux.part");
-    let output = tokio::process::Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-hide_banner",
-            "-loglevel", "error",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", concat_path.to_string_lossy().as_ref(),
-            "-c", "copy",
-            "-bsf:a", "aac_adtstoasc",
-            "-movflags", "+faststart",
-            "-f", "mp4",
-            out_part.to_string_lossy().as_ref(),
-        ])
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    cmd.args([
+        "-y",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", concat_path.to_string_lossy().as_ref(),
+        "-c", "copy",
+        "-movflags", "+faststart",
+        "-f", "mp4",
+        out_part.to_string_lossy().as_ref(),
+    ]);
+    if is_ts {
+        cmd.args(["-bsf:a", "aac_adtstoasc"]);
+    }
+    let output = cmd
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)

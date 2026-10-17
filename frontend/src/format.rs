@@ -43,9 +43,26 @@ pub fn fmt_runtime(ticks: Option<i64>) -> String {
     }
 }
 
-/// Estimated final size for a transcode preset, from item duration.
-pub fn estimate_size(estimate_bps: Option<u64>, ticks: Option<i64>) -> Option<u64> {
-    let secs = ticks? as f64 / 10_000_000.0;
-    let bps = estimate_bps?;
-    Some((bps as f64 * secs / 8.0) as u64)
+/// Estimated final size for a transcode preset. Primary model: the source
+/// codec is kept, so the file shrinks roughly with the pixel-count ratio.
+/// Falls back to the fixed-ladder bitrate when source dimensions are unknown.
+pub fn estimate_size(
+    preset: &shared::QualityPreset,
+    media: Option<&shared::MediaInfo>,
+    ticks: Option<i64>,
+) -> Option<u64> {
+    let orig = media.and_then(|m| m.size)?;
+    let src_dim = media.and_then(|m| m.width.map(|w| w.max(m.height.unwrap_or(0))));
+    let target_dim = preset.max_width.or(preset.max_height)?;
+    match src_dim {
+        Some(s) if s > 0 => {
+            let ratio = ((target_dim as f64 / s as f64).powi(2)).clamp(0.02, 1.0);
+            Some((orig as f64 * ratio) as u64)
+        }
+        _ => {
+            let secs = ticks? as f64 / 10_000_000.0;
+            let bps = preset.estimate_bps?;
+            Some((bps as f64 * secs / 8.0) as u64)
+        }
+    }
 }

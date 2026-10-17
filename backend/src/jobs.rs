@@ -18,6 +18,8 @@ struct JobRuntime {
     creds: Credentials,
     /// Session that created the job (for auto-save delivery).
     owner_session: Option<String>,
+    /// Codec/bitrate for transcode jobs (None for originals).
+    transcode: Option<TranscodeParams>,
     is_audio: bool,
     run_ticks: Option<i64>,
     container_ext: Option<String>,
@@ -35,6 +37,14 @@ struct JobEntry {
     rt: JobRuntime,
 }
 
+/// Exact transcode request computed once at job creation: source codec passthrough
+/// plus a bitrate scaled to the target resolution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscodeParams {
+    pub video_codec: String,
+    pub video_bitrate: u64,
+}
+
 #[derive(Serialize, Deserialize)]
 struct PersistedJob {
     job: DownloadJob,
@@ -45,6 +55,8 @@ struct PersistedJob {
     final_name: String,
     #[serde(default)]
     owner_session: Option<String>,
+    #[serde(default)]
+    transcode: Option<TranscodeParams>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -115,6 +127,7 @@ impl JobManager {
                         job: job.clone(),
                         rt: JobRuntime {
                             owner_session: p.owner_session,
+                            transcode: p.transcode,
                             creds: Credentials {
                                 server_url: p.creds.server_url,
                                 user_id: p.creds.user_id,
@@ -166,6 +179,7 @@ impl JobManager {
                     container_ext: e.rt.container_ext.clone(),
                     final_name: e.rt.final_name.clone(),
                     owner_session: e.rt.owner_session.clone(),
+                    transcode: e.rt.transcode.clone(),
                 })
                 .collect(),
         };
@@ -302,10 +316,16 @@ impl JobManager {
         };
 
         let mut inner = self.inner.lock().unwrap();
+        let transcode = if preset.kind == shared::QualityKind::Transcode {
+            Some(compute_transcode_params(&detail, &preset))
+        } else {
+            None
+        };
         let entry = JobEntry {
             job,
             rt: JobRuntime {
                 owner_session,
+                transcode,
                 creds,
                 is_audio,
                 run_ticks: detail.run_time_ticks,
@@ -342,6 +362,7 @@ impl JobManager {
             creds: e.rt.creds.clone(),
             is_audio: e.rt.is_audio,
             run_ticks: e.rt.run_ticks,
+            transcode: e.rt.transcode.clone(),
             tmp_dir: e.rt.tmp_dir.clone(),
             final_name: e.rt.final_name.clone(),
             downloads_dir: e.rt.downloads_dir.clone(),
@@ -646,9 +667,51 @@ pub struct EntrySnapshot {
     pub creds: Credentials,
     pub is_audio: bool,
     pub run_ticks: Option<i64>,
+    pub transcode: Option<TranscodeParams>,
     pub tmp_dir: PathBuf,
     pub final_name: String,
     pub downloads_dir: PathBuf,
+}
+
+fn normalize_codec(raw: &str) -> String {
+    match raw.to_lowercase().as_str() {
+        "h265" | "hevc" => "hevc".to_string(),
+        "h264" | "avc" => "h264".to_string(),
+        "av1" => "av1".to_string(),
+        "vp9" => "vp9".to_string(),
+        // Anything exotic falls back to the universally encodable codec.
+        _ => "h264".to_string(),
+    }
+}
+
+/// Same codec as the source, bitrate scaled by the resolution ratio
+/// (a 1080p -> 720p of a 5.1 GB file lands around ~2.3 GB instead of
+/// inflating to a fixed 8 Mbps H.264 target).
+fn compute_transcode_params(detail: &ItemDetail, preset: &QualityPreset) -> TranscodeParams {
+    let media = detail.media.as_ref();
+    let codec = media
+        .and_then(|m| m.video_codec.clone())
+        .map(|c| normalize_codec(&c))
+        .unwrap_or_else(|| "h264".to_string());
+
+    let src_dim = media.and_then(|m| m.width.map(|w| w.max(m.height.unwrap_or(0))));
+    let target_dim = preset.max_width.or(preset.max_height).unwrap_or(1920);
+
+    let base_bps = media.and_then(|m| m.video_bitrate).or_else(|| {
+        // Fall back to the file's average bitrate minus a rough audio share.
+        let secs = run_ticks_secs(detail.run_time_ticks)?;
+        let size = media.and_then(|m| m.size)?;
+        Some(((size as f64 * 8.0 / secs) * 0.88) as u64)
+    });
+
+    let bps = match (src_dim, base_bps) {
+        (Some(s), Some(b)) if s > 0 => {
+            let ratio = ((target_dim as f64 / s as f64).powi(2)).clamp(0.05, 1.0);
+            ((b as f64 * ratio) as u64).clamp(300_000, 20_000_000)
+        }
+        _ => preset.video_bitrate.unwrap_or(4_000_000),
+    };
+    TranscodeParams { video_codec: codec, video_bitrate: bps }
 }
 
 /// Human-friendly file base name for an item.

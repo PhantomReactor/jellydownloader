@@ -297,12 +297,19 @@ impl JellyfinClient {
     }
 
     /// URL for the transcoding master playlist with a target quality.
-    pub fn hls_master_url(c: &Credentials, item_id: &str, preset: &shared::QualityPreset) -> String {
+    /// The video codec matches the source (e.g. HEVC -> HEVC) and the bitrate
+    /// scales with the resolution change, so a downscale is smaller than the original.
+    pub fn hls_master_url(
+        c: &Credentials,
+        item_id: &str,
+        preset: &shared::QualityPreset,
+        video_codec: &str,
+        video_bitrate: u64,
+    ) -> String {
         format!(
-            "{}/Videos/{item_id}/master.m3u8?api_key={}&VideoCodec=h264&AudioCodec=aac&VideoBitrate={}&AudioBitrate={}&MaxWidth={}&MaxHeight={}",
+            "{}/Videos/{item_id}/master.m3u8?api_key={}&VideoCodec={video_codec}&AudioCodec=aac&VideoBitrate={video_bitrate}&AudioBitrate={}&MaxWidth={}&MaxHeight={}",
             c.server_url,
             c.token,
-            preset.video_bitrate.unwrap_or(4_000_000),
             preset.audio_bitrate.unwrap_or(128_000),
             preset.max_width.unwrap_or(1920),
             preset.max_height.unwrap_or(1080),

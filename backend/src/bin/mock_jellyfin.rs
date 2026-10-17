@@ -145,7 +145,7 @@ fn movie_detail(id: &str) -> serde_json::Value {
             "Container": "mp4",
             "Size": std::fs::metadata(format!("{MEDIA_DIR}/original.mp4")).map(|m| m.len()).unwrap_or(0),
             "MediaStreams": [
-                { "Type": "Video", "Codec": "h264", "Width": 640, "Height": 360, "BitRate": 400_000 },
+                { "Type": "Video", "Codec": "hevc", "Width": 1920, "Height": 800, "BitRate": 5_700_000 },
                 { "Type": "Audio", "Codec": "aac", "Channels": 2 }
             ]
         }]
@@ -167,7 +167,7 @@ fn episode_detail(id: &str, num: i64) -> serde_json::Value {
             "Container": "mp4",
             "Size": std::fs::metadata(format!("{MEDIA_DIR}/original.mp4")).map(|m| m.len()).unwrap_or(0),
             "MediaStreams": [
-                { "Type": "Video", "Codec": "h264", "Width": 640, "Height": 360, "BitRate": 400_000 },
+                { "Type": "Video", "Codec": "hevc", "Width": 1920, "Height": 800, "BitRate": 5_700_000 },
                 { "Type": "Audio", "Codec": "aac", "Channels": 2 }
             ]
         }]
