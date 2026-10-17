@@ -62,6 +62,15 @@ pub async fn login(server_url: String, username: String, password: String) -> Re
     post::<User>("/api/login", &LoginRequest { server_url, username, password }).await
 }
 
+#[derive(Clone, serde::Deserialize)]
+pub struct AppConfig {
+    pub server_url: Option<String>,
+}
+
+pub async fn app_config() -> Result<AppConfig, String> {
+    get("/api/config".to_string()).await
+}
+
 pub async fn me() -> Result<User, String> {
     get("/api/me".to_string()).await
 }

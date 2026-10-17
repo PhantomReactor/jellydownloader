@@ -15,6 +15,19 @@ fn stored_server() -> String {
 pub fn LoginPage() -> impl IntoView {
     let ctx = use_context::<AppCtx>().expect("app context");
     let (server, set_server) = signal(stored_server());
+    let (fixed_server, set_fixed_server) = signal(None::<String>);
+
+    // If the operator pinned a server in config.json, show and lock it.
+    spawn_local(async move {
+        #[derive(serde::Deserialize)]
+        struct Cfg { server_url: Option<String> }
+        if let Ok(cfg) = api::app_config().await {
+            set_fixed_server.set(cfg.server_url.clone());
+            if let Some(u) = cfg.server_url {
+                set_server.set(u);
+            }
+        }
+    });
     let (username, set_username) = signal(String::new());
     let (password, set_password) = signal(String::new());
     let (error, set_error) = signal(None::<String>);
@@ -67,11 +80,15 @@ pub fn LoginPage() -> impl IntoView {
                         type="text"
                         placeholder="http://192.168.1.100:8096"
                         prop:value=move || server.get()
+                        prop:disabled=move || fixed_server.get().is_some()
                         on:input=move |e| set_server.set(event_target_value(&e))
                         autocomplete="url"
                         spellcheck="false"
                     />
                 </label>
+                <Show when=move || fixed_server.get().is_some()>
+                    <p class="login-hint" style="margin:-6px 0 12px; text-align:left;">"Pinned by the server operator — downloads use this address."</p>
+                </Show>
                 <label class="field">
                     <span>"Username"</span>
                     <input

@@ -17,6 +17,10 @@ pub struct Config {
     pub cleanup_hours: u64,
     /// Compiled frontend assets. Overridable with JD_DIST env var.
     pub frontend_dist: String,
+    /// Optional: pin the Jellyfin server for everyone (recommended when the app
+    /// runs next to Jellyfin). Login then ignores the URL field entirely.
+    #[serde(default)]
+    pub server_url: Option<String>,
 }
 
 fn default_cleanup_hours() -> u64 {
@@ -32,6 +36,7 @@ impl Default for Config {
             parallel_downloads: 3,
             cleanup_hours: 24,
             frontend_dist: "../frontend/dist".to_string(),
+            server_url: None,
         }
     }
 }
