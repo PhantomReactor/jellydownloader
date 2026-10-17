@@ -767,6 +767,15 @@ impl JobManager {
         warn!(job = id, "download failed: {msg}");
     }
 
+    /// Keep the completed state but surface a caveat about the file.
+    pub fn set_error_note(&self, id: &str, note: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(e) = inner.jobs.get_mut(id) {
+            e.job.error = Some(note.to_string());
+            self.persist(&inner);
+        }
+    }
+
     /// Called when an engine task exits for any reason: clears runtime bookkeeping and frees a slot.
     pub fn task_exited(&self, id: &str) {
         let mut inner = self.inner.lock().unwrap();

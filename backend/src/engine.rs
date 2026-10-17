@@ -53,7 +53,7 @@ async fn run_inner(mgr: &Arc<JobManager>, id: &str) -> Result<PathBuf> {
     let path = match preset.kind {
         QualityKind::Original => download_original(&ctx, mgr, &job, &creds, is_audio, source_id.as_deref(), &tmp_dir, &downloads_dir, &final_name).await?,
         QualityKind::Transcode => {
-            download_transcode(&ctx, mgr, &job, &creds, run_ticks, &tmp_dir, &preset, source_id, transcode).await?;
+            download_transcode(&ctx, mgr, &job, &creds, run_ticks, &tmp_dir, &preset, source_id, transcode, &downloads_dir, &final_name).await?;
             mgr.set_state(id, JobState::Remuxing);
             let final_path = remux(&job, &tmp_dir, &downloads_dir, &final_name).await?;
             let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -368,6 +368,7 @@ async fn download_segment(
     Ok(bytes)
 }
 
+#[allow(unused_assignments)]
 async fn download_transcode(
     ctx: &EngineCtx,
     mgr: &Arc<JobManager>,
@@ -378,6 +379,8 @@ async fn download_transcode(
     preset: &shared::QualityPreset,
     source_id: Option<String>,
     transcode: Option<crate::jobs::TranscodeParams>,
+    downloads_dir: &Path,
+    final_name: &str,
 ) -> Result<()> {
     // Source-codec passthrough (e.g. HEVC -> HEVC); fall back to H.264 if the
     // server refuses to encode the requested codec.
@@ -389,8 +392,15 @@ async fn download_transcode(
     let master_url = crate::jellyfin::JellyfinClient::hls_master_url(creds, &job.item_id, preset, &codec, bitrate, msid.as_deref());
     let mut done_count = existing_segment_count(tmp_dir);
     mgr.set_segments(&job.id, done_count as u32, None);
-
     let item_total_secs = run_ticks_secs(run_ticks);
+    let mut bytes_progressed: u64 = if done_count > 0 {
+        std::fs::read_dir(tmp_dir)
+            .map(|entries| entries.filter_map(|e| e.ok()).filter_map(|e| e.metadata().ok().map(|m| m.len())).sum())
+            .unwrap_or(0)
+        + job.bytes_done
+    } else {
+        job.bytes_done
+    };
     let mut media_url: Option<String> = None;
     let mut first_try = true;
 
@@ -458,9 +468,11 @@ async fn download_transcode(
             }
         }
 
+        let mut tail_failures = 0u32;
         while done_count < total_segments {
             let (uri, _dur) = &playlist.segs[done_count];
             let dest = segment_file(tmp_dir, done_count);
+            let downloaded_secs: f64 = playlist.segs[..done_count].iter().map(|(_, d)| *d).sum();
             let t0 = std::time::Instant::now();
             tracing::info!(job = %job.id, seg = done_count, uri = %uri, "requesting segment");
             // Bound the wait: a segment that never arrives means Jellyfin's
@@ -471,12 +483,42 @@ async fn download_transcode(
                 download_segment(ctx, &creds.token, media_url.as_deref().unwrap_or(&master_url), uri, &dest),
             )
             .await;
-            let bytes = match bytes_result {
+            let bytes: u64 = match bytes_result {
                 Ok(Ok(b)) => {
                     tracing::info!(job = %job.id, seg = done_count, ms = t0.elapsed().as_millis() as u64, bytes_count = b, "segment done");
+                    { bytes_progressed += b; }
                     b
                 }
-                Ok(Err(e)) => return Err(e).with_context(|| format!("segment {done_count}")),
+                Ok(Err(e)) => {
+                    // Jellyfin re-runs its transcode per segment request; a 5xx
+                    // (e.g. its ffmpeg crashing) is often retryable.
+                    if done_count + 3 >= total_segments
+                        && bytes_progressed > 0
+                        && tail_failures >= 3
+                    {
+                        // Salvage: hand back the ~complete file rather than
+                        // failing a multi-hour transcode over its final seconds.
+                        let missing = ((total_secs - downloaded_secs).max(0.0)) as u64;
+                        warn!(job = %job.id, "encoder keeps crashing near the end; salvaging file ~{missing}s short");
+                        mgr.set_state(&job.id, JobState::Remuxing);
+                        let final_path = remux(&job, tmp_dir, downloads_dir, final_name).await?;
+                        let _ = std::fs::remove_dir_all(tmp_dir);
+                        anyhow::bail!("__SALVAGED__{}", final_path.to_string_lossy());
+                    }
+                    tail_failures += 1;
+                    tracing::warn!(job = %job.id, seg = done_count, "segment failed ({}), retrying", format!("{e:#}"));
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    // Stay in sync with the playlist; it may have changed.
+                    break;
+                }
+                Err(_) if done_count + 3 >= total_segments && bytes_progressed > 0 && tail_failures >= 3 => {
+                    let missing = ((total_secs - downloaded_secs).max(0.0)) as u64;
+                    warn!(job = %job.id, "encoder stalled near the end; salvaging file ~{missing}s short");
+                    mgr.set_state(&job.id, JobState::Remuxing);
+                    let final_path = remux(&job, tmp_dir, downloads_dir, final_name).await?;
+                    let _ = std::fs::remove_dir_all(tmp_dir);
+                    anyhow::bail!("__SALVAGED__{}", final_path.to_string_lossy());
+                }
                 Err(_) => {
                     return Err(anyhow!(
                         "Jellyfin did not produce segment {done_count} within {seg_timeout}s — its encoder stalled (check Jellyfin's dashboard/logs). Lower tiers (720p/480p) or hardware acceleration should work."
@@ -484,9 +526,9 @@ async fn download_transcode(
                 }
             };
             done_count += 1;
-            let downloaded_secs: f64 = playlist.segs[..done_count].iter().map(|(_, d)| *d).sum();
+            let downloaded_after = playlist.segs[..done_count].iter().map(|(_, d)| *d).sum();
             mgr.set_segments(&job.id, done_count as u32, Some(total_segments as u32));
-            mgr.add_bytes(&job.id, bytes, Some(downloaded_secs), Some(total_secs.max(0.001)));
+            mgr.add_bytes(&job.id, bytes, Some(downloaded_after), Some(total_secs.max(0.001)));
         }
 
         if playlist.endlist {
