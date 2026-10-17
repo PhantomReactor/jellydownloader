@@ -463,10 +463,26 @@ async fn download_transcode(
             let dest = segment_file(tmp_dir, done_count);
             let t0 = std::time::Instant::now();
             tracing::info!(job = %job.id, seg = done_count, uri = %uri, "requesting segment");
-            let bytes = download_segment(ctx, &creds.token, media_url.as_deref().unwrap_or(&master_url), uri, &dest)
-                .await
-                .with_context(|| format!("segment {done_count}"))?;
-            tracing::info!(job = %job.id, seg = done_count, ms = t0.elapsed().as_millis() as u64, bytes, "segment done");
+            // Bound the wait: a segment that never arrives means Jellyfin's
+            // encoder stalled; without this the job also hogged a parallel slot.
+            let seg_timeout = if done_count == 0 { 300 } else { 180 };
+            let bytes_result = tokio::time::timeout(
+                Duration::from_secs(seg_timeout),
+                download_segment(ctx, &creds.token, media_url.as_deref().unwrap_or(&master_url), uri, &dest),
+            )
+            .await;
+            let bytes = match bytes_result {
+                Ok(Ok(b)) => {
+                    tracing::info!(job = %job.id, seg = done_count, ms = t0.elapsed().as_millis() as u64, bytes_count = b, "segment done");
+                    b
+                }
+                Ok(Err(e)) => return Err(e).with_context(|| format!("segment {done_count}")),
+                Err(_) => {
+                    return Err(anyhow!(
+                        "Jellyfin did not produce segment {done_count} within {seg_timeout}s — its encoder stalled (check Jellyfin's dashboard/logs). Lower tiers (720p/480p) or hardware acceleration should work."
+                    ))
+                }
+            };
             done_count += 1;
             let downloaded_secs: f64 = playlist.segs[..done_count].iter().map(|(_, d)| *d).sum();
             mgr.set_segments(&job.id, done_count as u32, Some(total_segments as u32));
