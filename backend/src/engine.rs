@@ -88,6 +88,19 @@ fn part_file_path(tmp_dir: &Path) -> PathBuf {
     tmp_dir.join("file.part")
 }
 
+/// rename() can't cross filesystems (the downloads dir may be a bind mount),
+/// so fall back to copy + delete when the kernel says EXDEV.
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(18) => {
+            std::fs::copy(from, to).map(|_| ())?;
+            std::fs::remove_file(from)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 fn auth_header(token: &str) -> String {
     format!(
         "MediaBrowser Client=\"Jellydown\", Device=\"Jellydown\", DeviceId=\"jellydown-desktop\", Version=\"0.1.0\", Token=\"{token}\""
@@ -107,7 +120,7 @@ async fn finalize_original(
         bail!("Nothing was downloaded");
     }
     let final_path = unique_final_path(downloads_dir, final_name);
-    std::fs::rename(&part, &final_path).with_context(|| format!("moving file to {}", final_path.display()))?;
+    move_file(&part, &final_path).with_context(|| format!("moving file to {}", final_path.display()))?;
     mgr.set_bytes_total(job_id, done);
     Ok(final_path)
 }
@@ -525,6 +538,6 @@ async fn remux(
         bail!("ffmpeg remux failed: {tail}");
     }
     let final_path = unique_final_path(downloads_dir, final_name);
-    std::fs::rename(&out_part, &final_path)?;
+    move_file(&out_part, &final_path)?;
     Ok(final_path)
 }
